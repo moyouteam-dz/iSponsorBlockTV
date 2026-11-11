@@ -34,3 +34,4 @@ object MobilePlaybackRules {
                 seconds >= s.start && seconds < s.end - 0.3
         }
     }
+}
