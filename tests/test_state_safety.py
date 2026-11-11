@@ -158,7 +158,7 @@ class SponsorBlockCacheTests(unittest.IsolatedAsyncioTestCase):
             sponsorblock_api_url="https://example.invalid/api/",
         )
         helper = api_helpers.ApiHelper(config, session)
-        self.assertEqual(await helper.get_segments("video-1"), ())
+        self.assertEqual(await helper.get_segments("video-1"), [])
         self.assertEqual(error.json_calls, 0)
         recovered = await helper.get_segments("video-1")
         self.assertEqual(len(recovered), 1)

@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import sys
+import tempfile
 import time
 
 import rich_click as click
@@ -116,16 +117,26 @@ class Config:
                 print("Blank config file created")
 
     def save(self):
-        with open(self.config_file, "w", encoding="utf-8") as f:
-            config_dict = self.__dict__
-            # Don't save the config file name
-            config_file = self.config_file
-            data_dir = self.data_dir
-            del config_dict["config_file"]
-            del config_dict["data_dir"]
-            json.dump(config_dict, f, indent=4)
-            self.config_file = config_file
-            self.data_dir = data_dir
+        # Work from a copy so an interrupted write never mutates the live config.
+        config_dict = {
+            key: value
+            for key, value in self.__dict__.items()
+            if key not in {"config_file", "data_dir"}
+        }
+        temp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", dir=self.data_dir,
+                prefix=".config-", suffix=".tmp", delete=False,
+            ) as temp_file:
+                temp_path = temp_file.name
+                json.dump(config_dict, temp_file, indent=4)
+                temp_file.flush()
+                os.fsync(temp_file.fileno())
+            os.replace(temp_path, self.config_file)
+        finally:
+            if temp_path is not None and os.path.exists(temp_path):
+                os.unlink(temp_path)
 
     def __eq__(self, other):
         if isinstance(other, Config):

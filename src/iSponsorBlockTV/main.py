@@ -25,44 +25,55 @@ class DeviceListener:
 
     # Ensures that we have a valid auth token
     async def refresh_auth_loop(self):
-        while True:
+        while not self.cancelled:
             await asyncio.sleep(60 * 60 * 24)  # Refresh every 24 hours
+            if self.cancelled:
+                return
             try:
                 await self.lounge_controller.refresh_auth()
-            except BaseException:
-                pass
+            except Exception:
+                self.logger.exception("Failed to refresh device authorization")
 
     async def is_available(self):
         try:
             return await self.lounge_controller.is_available()
-        except BaseException:
+        except Exception:
             return False
 
     # Main subscription loop
     async def loop(self):
         lounge_controller = self.lounge_controller
         while not self.cancelled:
-            while not lounge_controller.linked():
+            while not self.cancelled and not lounge_controller.linked():
                 try:
                     self.logger.debug("Refreshing auth")
                     await lounge_controller.refresh_auth()
-                except BaseException:
-                    await asyncio.sleep(10)
-            while not (await self.is_available()) and not self.cancelled:
+                except Exception:
+                    if not self.cancelled:
+                        await asyncio.sleep(10)
+            if self.cancelled:
+                return
+            while not self.cancelled and not await self.is_available():
                 self.logger.debug("Waiting for device to be available")
                 await asyncio.sleep(10)
+            if self.cancelled:
+                return
             try:
                 await lounge_controller.connect()
-            except BaseException:
-                pass
-            while not lounge_controller.connected() and not self.cancelled:
+            except Exception:
+                self.logger.exception("Could not connect to device")
+            while not self.cancelled and not lounge_controller.connected():
                 # Doesn't connect to the device if it's a kids profile (it's broken)
                 self.logger.debug("Waiting for device to be connected")
                 await asyncio.sleep(10)
+                if self.cancelled:
+                    return
                 try:
                     await lounge_controller.connect()
-                except BaseException:
-                    pass
+                except Exception:
+                    self.logger.exception("Could not reconnect to device")
+            if self.cancelled:
+                return
             self.logger.info(
                 "Connected to device %s (%s)", lounge_controller.screen_name, self.name
             )
@@ -70,16 +81,16 @@ class DeviceListener:
                 self.logger.debug("Subscribing to lounge")
                 sub = await lounge_controller.subscribe_monitored(self)
                 await sub
-            except BaseException:
-                pass
+            except Exception:
+                self.logger.exception("Device subscription failed")
 
     # Method called on playback state change
     async def __call__(self, state):
         time_start = time.monotonic()
-        try:
+        if self.cancelled:
+            return
+        if self.task is not None:
             self.task.cancel()
-        except BaseException:
-            pass
         self.task = asyncio.create_task(self.process_playstatus(state, time_start))
 
     # Processes the playback state change
@@ -108,10 +119,13 @@ class DeviceListener:
                 next_segment = segment
                 start_next_segment = position if is_within_start_range else segment_start
                 break
-        if start_next_segment:
+        if start_next_segment is not None:
+            playback_speed = self.lounge_controller.playback_speed
+            if playback_speed <= 0:
+                return  # Playback is not advancing; wait for a new playback event.
             time_to_next = (
                 (start_next_segment - position - (time.monotonic() - time_start))
-                / self.lounge_controller.playback_speed
+                / playback_speed
             ) - self.offset
             await self.skip(time_to_next, next_segment["end"], next_segment["UUID"])
 
@@ -126,19 +140,22 @@ class DeviceListener:
 
     async def cancel(self):
         self.cancelled = True
-        await self.lounge_controller.disconnect()
-        if self.task:
-            self.task.cancel()
-        if self.lounge_controller.subscribe_task_watchdog:
-            self.lounge_controller.subscribe_task_watchdog.cancel()
-        if self.lounge_controller.subscribe_task:
-            self.lounge_controller.subscribe_task.cancel()
-        await asyncio.gather(
-            self.task,
-            self.lounge_controller.subscribe_task_watchdog,
-            self.lounge_controller.subscribe_task,
-            return_exceptions=True,
-        )
+        tasks = [
+            task
+            for task in (
+                self.task,
+                self.lounge_controller.subscribe_task_watchdog,
+                self.lounge_controller.subscribe_task,
+            )
+            if task is not None
+        ]
+        for task in tasks:
+            task.cancel()
+        try:
+            await self.lounge_controller.disconnect()
+        finally:
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
 
     async def initialize_web_session(self):
         await self.lounge_controller.change_web_session(self.web_session)

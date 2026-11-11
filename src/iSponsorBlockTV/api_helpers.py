@@ -195,14 +195,16 @@ class ApiHelper:
         headers = {"Accept": "application/json"}
         url = self.sponsorblock_api_url + "skipSegments/" + vid_id_hashed
         async with self.web_session.get(url, headers=headers, params=params) as response:
+            if response.status != 200:
+                response_text = await response.text()
+                print(
+                    f"Error getting segments for video {vid_id}, hashed as {vid_id_hashed}."
+                    f" Code: {response.status} - {response_text}"
+                )
+                # 404: no known segments (finite TTL). Other HTTP errors: retry on
+                # the next lookup rather than permanently hiding SponsorBlock results.
+                return [], False if response.status == 404 else None
             response_json = await response.json()
-        if response.status != 200:
-            response_text = await response.text()
-            print(
-                f"Error getting segments for video {vid_id}, hashed as {vid_id_hashed}."
-                f" Code: {response.status} - {response_text}"
-            )
-            return [], True
         for i in response_json:
             if str(i["videoID"]) == str(vid_id):
                 response_json = i
