@@ -13,6 +13,7 @@ from .debug_helpers import AiohttpTracer
 class DeviceListener:
     def __init__(self, api_helper, config, device, debug: bool, web_session):
         self.task: Optional[asyncio.Task] = None
+        self._playback_generation = 0
         self.api_helper = api_helper
         self.offset = device.offset
         self.name = device.name
@@ -89,22 +90,28 @@ class DeviceListener:
         time_start = time.monotonic()
         if self.cancelled:
             return
+        self._playback_generation += 1
+        generation = self._playback_generation
         if self.task is not None:
             self.task.cancel()
-        self.task = asyncio.create_task(self.process_playstatus(state, time_start))
+        self.task = asyncio.create_task(self.process_playstatus(state, time_start, generation))
 
     # Processes the playback state change
-    async def process_playstatus(self, state, time_start):
+    async def process_playstatus(self, state, time_start, generation=None):
         segments = []
         if state.videoId:
             segments = await self.api_helper.get_segments(state.videoId)
+        if self.cancelled or (
+            generation is not None and generation != self._playback_generation
+        ):
+            return
         if state.state.value == 1:  # Playing
             self.logger.info("Playing video %s with %d segments", state.videoId, len(segments))
             if segments:  # If there are segments
-                await self.time_to_segment(segments, state.currentTime, time_start)
+                await self.time_to_segment(segments, state.currentTime, time_start, generation)
 
     # Finds the next segment to skip to and skips to it
-    async def time_to_segment(self, segments, position, time_start):
+    async def time_to_segment(self, segments, position, time_start, generation=None):
         start_next_segment = None
         next_segment = None
         for segment in segments:
@@ -127,11 +134,15 @@ class DeviceListener:
                 (start_next_segment - position - (time.monotonic() - time_start))
                 / playback_speed
             ) - self.offset
-            await self.skip(time_to_next, next_segment["end"], next_segment["UUID"])
+            await self.skip(time_to_next, next_segment["end"], next_segment["UUID"], generation)
 
     # Skips to the next segment (waits for the time to pass)
-    async def skip(self, time_to, position, uuids):
+    async def skip(self, time_to, position, uuids, generation=None):
         await asyncio.sleep(time_to)
+        if self.cancelled or (
+            generation is not None and generation != self._playback_generation
+        ):
+            return
         self.logger.info("Skipping segment: seeking to %s", position)
         await asyncio.gather(
             asyncio.create_task(self.lounge_controller.seek_to(position)),
@@ -140,6 +151,7 @@ class DeviceListener:
 
     async def cancel(self):
         self.cancelled = True
+        self._playback_generation += 1
         tasks = [
             task
             for task in (
@@ -156,6 +168,9 @@ class DeviceListener:
         finally:
             if tasks:
                 await asyncio.gather(*tasks, return_exceptions=True)
+            stop_actions = getattr(self.lounge_controller, "stop_background_actions", None)
+            if stop_actions is not None:
+                await stop_actions()
 
     async def initialize_web_session(self):
         await self.lounge_controller.change_web_session(self.web_session)
