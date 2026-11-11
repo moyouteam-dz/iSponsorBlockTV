@@ -39,6 +39,8 @@ object SponsorSegments {
     /** Match the upstream early-video behavior: skip an already-started segment only near 0s. */
     fun next(segments: List<SkipSegment>, positionSeconds: Double, speed: Double = 1.0,
              elapsedSeconds: Double = 0.0, offsetMillis: Int = 0): SkipDecision? {
+        // A paused, invalid or reversed playback rate must not schedule seeks.
+        if (!speed.isFinite() || speed <= 0.0) return null
         val safeSpeed = speed.coerceAtLeast(0.25)
         val pos = positionSeconds.coerceAtLeast(0.0)
         val current = pos + elapsedSeconds.coerceAtLeast(0.0) * safeSpeed

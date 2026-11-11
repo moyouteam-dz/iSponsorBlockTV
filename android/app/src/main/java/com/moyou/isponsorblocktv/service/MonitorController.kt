@@ -152,7 +152,7 @@ class MonitorController @Inject constructor(
                 if (playing) releaseMuteIfNeeded()
             }
             "onPlaybackSpeedChanged" -> {
-                playbackSpeed = number(data, "playbackSpeed", 1.0).coerceIn(0.25, 4.0)
+                playbackSpeed = number(data, "playbackSpeed", 1.0).coerceIn(0.0, 4.0)
                 scheduleSkip(config)
                 try { lounge.getNowPlaying() } catch (_: Exception) { }
             }
@@ -196,7 +196,7 @@ class MonitorController @Inject constructor(
     private fun scheduleSkip(config: MonitorConfig) {
         pendingSkip?.cancel()
         pendingSkip = null
-        if (!playing || videoId.isBlank() || config.categories.isEmpty()) return
+        if (!playing || videoId.isBlank() || config.categories.isEmpty() || playbackSpeed <= 0.0) return
         val currentVideoId = videoId
         val currentPosition = position
         val currentSpeed = playbackSpeed
@@ -244,8 +244,12 @@ class MonitorController @Inject constructor(
         when {
             ended -> releaseMuteIfNeeded()
             config.skipAds && skipAllowed -> {
-                lounge.skipAd()
-                releaseMuteIfNeeded()
+                if (lounge.skipAd()) {
+                    releaseMuteIfNeeded()
+                } else if (config.muteAds && !mutedByUs && lounge.mute(true, volume)) {
+                    mutedByUs = true
+                    mutableStatus.update { it.copy(mutedByApp = true) }
+                }
             }
             config.muteAds && !mutedByUs -> {
                 if (lounge.mute(true, volume)) {

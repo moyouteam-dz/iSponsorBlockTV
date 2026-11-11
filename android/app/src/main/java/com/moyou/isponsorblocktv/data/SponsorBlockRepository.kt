@@ -13,6 +13,7 @@ import org.json.JSONObject
 @Singleton
 class SponsorBlockRepository @Inject constructor(private val http: HttpTransport) {
     private data class CacheEntry(val timestamp: Long, val segments: List<RawSegment>)
+    private data class FetchResult(val segments: List<RawSegment>, val cacheable: Boolean)
     private val cache = LinkedHashMap<String, CacheEntry>()
     private val url = "https://sponsor.ajay.app/api/"
 
@@ -21,16 +22,19 @@ class SponsorBlockRepository @Inject constructor(private val http: HttpTransport
         val key = videoId + ":" + categories.sorted().joinToString(",")
         val now = System.currentTimeMillis()
         val cached = synchronized(cache) { cache[key]?.takeIf { now - it.timestamp < 5 * 60 * 1000 } }
-        val raw = cached?.segments ?: fetch(videoId, categories).also { items ->
-            synchronized(cache) {
-                cache[key] = CacheEntry(now, items)
-                while (cache.size > 60) cache.remove(cache.keys.first())
+        val raw = cached?.segments ?: fetch(videoId, categories).let { result ->
+            if (result.cacheable) {
+                synchronized(cache) {
+                    cache[key] = CacheEntry(now, result.segments)
+                    while (cache.size > 60) cache.remove(cache.keys.first())
+                }
             }
+            result.segments
         }
         return SponsorSegments.merge(raw, minimum.toDouble())
     }
 
-    private suspend fun fetch(videoId: String, categories: Set<String>): List<RawSegment> {
+    private suspend fun fetch(videoId: String, categories: Set<String>): FetchResult {
         val prefix = MessageDigest.getInstance("SHA-256")
             .digest(videoId.toByteArray(Charsets.UTF_8))
             .take(2).joinToString("") { "%02x".format(it.toInt() and 0xff) }
@@ -38,13 +42,15 @@ class SponsorBlockRepository @Inject constructor(private val http: HttpTransport
         val categoryArgs = categories.sorted().joinToString("&") { "category=${java.net.URLEncoder.encode(it, "UTF-8")}" }
         val fullUrl = "${url}skipSegments/$prefix?actionType=skip&service=youtube&$categoryArgs"
         val response = http.get(fullUrl)
-        if (response.code == 404) return emptyList()
+        if (response.code == 404) return FetchResult(emptyList(), cacheable = true)
         if (response.code != 200) throw java.io.IOException("SponsorBlock HTTP ${response.code}")
-        val choices = try { JSONArray(response.body) } catch (_: JSONException) { return emptyList() }
+        // Malformed/transient responses must be retried, not cached as empty results.
+        val choices = try { JSONArray(response.body) }
+            catch (error: JSONException) { throw java.io.IOException("Invalid SponsorBlock JSON", error) }
         for (index in 0 until choices.length()) {
             val candidate = choices.optJSONObject(index) ?: continue
             if (candidate.optString("videoID") != videoId) continue
-            val found = candidate.optJSONArray("segments") ?: return emptyList()
+            val found = candidate.optJSONArray("segments") ?: return FetchResult(emptyList(), cacheable = false)
             val result = mutableListOf<RawSegment>()
             for (i in 0 until found.length()) {
                 val part = found.optJSONObject(i) ?: continue
@@ -52,9 +58,10 @@ class SponsorBlockRepository @Inject constructor(private val http: HttpTransport
                 if (interval.length() < 2) continue
                 result += RawSegment(interval.optDouble(0), interval.optDouble(1), part.optString("UUID"))
             }
-            return result
+            return FetchResult(result, cacheable = true)
         }
-        return emptyList()
+        // Another video can share the four-character hash bucket.
+        return FetchResult(emptyList(), cacheable = false)
     }
 
     suspend fun markViewed(uuids: List<String>) {
