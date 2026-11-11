@@ -145,7 +145,12 @@ class DeviceListener:
             return
         self.logger.info("Skipping segment: seeking to %s", position)
         # Only report a segment after the device has accepted the seek.
-        await self.lounge_controller.seek_to(position)
+        seek_result = await self.lounge_controller.seek_to(position)
+        # The underlying command can explicitly reject the seek without raising.
+        # Preserve legacy adapters that return None on success.
+        if seek_result is False:
+            self.logger.warning("TV rejected segment seek to %s", position)
+            return
         await self.api_helper.mark_viewed_segments(uuids)
 
     async def cancel(self):
