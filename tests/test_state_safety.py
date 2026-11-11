@@ -112,7 +112,8 @@ class PlaybackTransitionTests(unittest.IsolatedAsyncioTestCase):
         )
         self.listener.skip.assert_awaited_once()
         args = self.listener.skip.await_args.args
-        self.assertEqual(args[1:], (5.0, ["one"]))
+        self.assertEqual(args[1:3], (5.0, ["one"]))
+        self.assertIsNone(args[3])  # Direct call without a playback generation
 
     async def test_zero_playback_speed_never_divides_or_seeks(self):
         self.controller.playback_speed = 0.0
