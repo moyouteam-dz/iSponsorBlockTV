@@ -41,6 +41,13 @@ class SponsorSegmentsTest {
         assertNull(SponsorSegments.next(s, 0.0, elapsedSeconds = 50.0))
     }
 
+    @Test fun pausedOrInvalidPlaybackSpeedMustNotScheduleSkip() {
+        val segments = listOf(SkipSegment(10.0, 15.0, listOf("x")))
+        assertNull(SponsorSegments.next(segments, 2.0, speed = 0.0))
+        assertNull(SponsorSegments.next(segments, 2.0, speed = -1.0))
+        assertNull(SponsorSegments.next(segments, 2.0, speed = Double.NaN))
+    }
+
     @Test fun appliesSpeedAndOffset() {
         val s = listOf(SkipSegment(20.0, 30.0, listOf("x")))
         assertEquals(4.8, SponsorSegments.next(s, 10.0, speed=2.0, offsetMillis=200)!!.waitSeconds, 0.001)
