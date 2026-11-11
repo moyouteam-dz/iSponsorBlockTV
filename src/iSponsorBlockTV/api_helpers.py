@@ -1,5 +1,6 @@
 import html
 from hashlib import sha256
+import asyncio
 from asyncio import FIRST_COMPLETED, Task, create_task, wait
 from typing import AsyncIterator, Collection, TypeVar
 
@@ -49,6 +50,14 @@ async def merge_iterators(iterators: Collection[AsyncIterator[_T]]) -> AsyncIter
     finally:
         for task in pending_tasks:
             task.cancel()
+        if pending_tasks:
+            await asyncio.gather(*pending_tasks, return_exceptions=True)
+        # Explicitly finalize the input generators; cancelling __anext__
+        # by itself does not reliably close an iterator paused after yield.
+        for iterator in iterators:
+            closer = getattr(iterator, "aclose", None)
+            if closer is not None:
+                await closer()
 
 
 # Class that handles all the api calls and their cache
@@ -77,7 +86,7 @@ class ApiHelper:
                 return None
             try:
                 pair_response = await response.json()
-            except BaseException:
+            except Exception:
                 return None
 
         screen = pair_response.get("screen")
@@ -205,11 +214,15 @@ class ApiHelper:
                 # the next lookup rather than permanently hiding SponsorBlock results.
                 return [], False if response.status == 404 else None
             response_json = await response.json()
-        for i in response_json:
-            if str(i["videoID"]) == str(vid_id):
-                response_json = i
-                break
-        return self.process_segments(response_json, self.minimum_skip_length)
+        # Multiple video IDs share each hashed SponsorBlock bucket.
+        # Never process or permanently cache another video's result.
+        matched = next(
+            (entry for entry in response_json if str(entry.get("videoID")) == str(vid_id)),
+            None,
+        )
+        if matched is None:
+            return [], None
+        return self.process_segments(matched, self.minimum_skip_length)
 
     @staticmethod
     def process_segments(response, minimum_skip_length):
