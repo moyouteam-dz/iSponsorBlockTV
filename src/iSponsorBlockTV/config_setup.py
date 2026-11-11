@@ -150,7 +150,7 @@ def main(config, debug: bool) -> None:
             if channel == "/exit":
                 break
 
-            task = loop.create_task(api_helper.search_channels(channel, apikey, web_session))
+            task = loop.create_task(api_helper.search_channels(channel))
             loop.run_until_complete(task)
             results = task.result()
             if len(results) == 0:

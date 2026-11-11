@@ -334,6 +334,8 @@ class AddDevice(ModalWithClickExit):
         )
 
     async def on_unmount(self) -> None:
+        self.discovery_generation += 1
+        self.pairing_validation_generation += 1
         if self.discovery_task and not self.discovery_task.done():
             self.discovery_task.cancel()
             try:
@@ -412,6 +414,8 @@ class AddDevice(ModalWithClickExit):
         device_count = 0
         try:
             async for device in self.api_helper.discover_youtube_devices_dial():
+                if discovery_generation != self.discovery_generation:
+                    return
                 try:
                     list_widget = self.query_one("#dial-devices-list")
                     searching_indicator = self.query_one("#dial-searching-indicator")
@@ -457,6 +461,8 @@ class AddDevice(ModalWithClickExit):
 
     @on(Input.Changed, "#pairing-code-input")
     def changed_pairing_code(self, event: Input.Changed):
+        # Invalidate requests even when the new input is malformed.
+        self.pairing_validation_generation += 1
         self.validated_paired_device = None
         self.pairing_can_add = False
         self.pairing_name_placeholder = self.DEFAULT_DEVICE_NAME_PLACEHOLDER
@@ -468,7 +474,6 @@ class AddDevice(ModalWithClickExit):
             self.pairing_info_text = ""
             return
 
-        self.pairing_validation_generation += 1
         self.pairing_info_text = "Validating pairing code..."
         self.pairing_validation_task = asyncio.create_task(
             self.task_validate_pairing_code(
@@ -624,15 +629,15 @@ class AddChannel(ModalWithClickExit):
         self.query_one("#channel-search-results").remove_children()
         try:
             channels_list = await self.api_helper.search_channels(channel_name)
-        except BaseException:
+            for channel in channels_list:
+                self.query_one("#channel-search-results").mount(ChannelRadio(channel))
+            self.query_one("#add-channel-info").update(
+                "" if channels_list else "No channels found"
+            )
+        except Exception:
             self.query_one("#add-channel-info").update("[#ff0000]Failed to search for channel")
+        finally:
             self.query_one("#search-channel-button").disabled = False
-            return
-        for i in channels_list:
-            self.query_one("#channel-search-results").mount(ChannelRadio(i))
-        if channels_list:
-            self.query_one("#search-channel-button").disabled = False
-        self.query_one("#add-channel-info").update("")
 
     @on(Button.Pressed, "#add-channel-button-search")
     def handle_add_channel_search(self) -> None:

@@ -1,5 +1,6 @@
 import html
 from hashlib import sha256
+import asyncio
 from asyncio import FIRST_COMPLETED, Task, create_task, wait
 from typing import AsyncIterator, Collection, TypeVar
 
@@ -49,6 +50,14 @@ async def merge_iterators(iterators: Collection[AsyncIterator[_T]]) -> AsyncIter
     finally:
         for task in pending_tasks:
             task.cancel()
+        if pending_tasks:
+            await asyncio.gather(*pending_tasks, return_exceptions=True)
+        # Explicitly finalize the input generators; cancelling __anext__
+        # by itself does not reliably close an iterator paused after yield.
+        for iterator in iterators:
+            closer = getattr(iterator, "aclose", None)
+            if closer is not None:
+                await closer()
 
 
 # Class that handles all the api calls and their cache
@@ -77,7 +86,7 @@ class ApiHelper:
                 return None
             try:
                 pair_response = await response.json()
-            except BaseException:
+            except Exception:
                 return None
 
         screen = pair_response.get("screen")
@@ -195,19 +204,25 @@ class ApiHelper:
         headers = {"Accept": "application/json"}
         url = self.sponsorblock_api_url + "skipSegments/" + vid_id_hashed
         async with self.web_session.get(url, headers=headers, params=params) as response:
+            if response.status != 200:
+                response_text = await response.text()
+                print(
+                    f"Error getting segments for video {vid_id}, hashed as {vid_id_hashed}."
+                    f" Code: {response.status} - {response_text}"
+                )
+                # 404: no known segments (finite TTL). Other HTTP errors: retry on
+                # the next lookup rather than permanently hiding SponsorBlock results.
+                return [], False if response.status == 404 else None
             response_json = await response.json()
-        if response.status != 200:
-            response_text = await response.text()
-            print(
-                f"Error getting segments for video {vid_id}, hashed as {vid_id_hashed}."
-                f" Code: {response.status} - {response_text}"
-            )
-            return [], True
-        for i in response_json:
-            if str(i["videoID"]) == str(vid_id):
-                response_json = i
-                break
-        return self.process_segments(response_json, self.minimum_skip_length)
+        # Multiple video IDs share each hashed SponsorBlock bucket.
+        # Never process or permanently cache another video's result.
+        matched = next(
+            (entry for entry in response_json if str(entry.get("videoID")) == str(vid_id)),
+            None,
+        )
+        if matched is None:
+            return [], None
+        return self.process_segments(matched, self.minimum_skip_length)
 
     @staticmethod
     def process_segments(response, minimum_skip_length):
@@ -215,6 +230,9 @@ class ApiHelper:
         ignore_ttl = True
         try:
             response_segments = response["segments"]
+            # An empty valid response is provisional: segments can be submitted later.
+            if not response_segments:
+                return [], False
             # sort by end
             response_segments.sort(key=lambda x: x["segment"][1])
             # extend ends of overlapping segments to make one big segment

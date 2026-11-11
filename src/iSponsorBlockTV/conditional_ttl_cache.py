@@ -75,8 +75,11 @@ class AsyncConditionalTTL:
             if key in self.ttl:
                 val = self.ttl[key]
             else:
-                self.ttl[key] = await func(*args, **kwargs)
-                val = self.ttl[key]
+                value, cache_policy = await func(*args, **kwargs)
+                # None denotes a transient outcome that should be retried, not cached.
+                if cache_policy is not None:
+                    self.ttl[key] = (value, cache_policy)
+                val = value
 
             return val
 

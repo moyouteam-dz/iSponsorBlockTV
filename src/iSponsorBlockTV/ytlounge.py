@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import json
 import sys
+from dataclasses import dataclass, replace
 from typing import Any, List
 
 import pyytlounge
@@ -18,12 +19,12 @@ from .constants import youtube_client_blacklist
 create_task = asyncio.create_task
 
 
+@dataclass(frozen=True)
 class PlaybackState:
-    def __init__(self):
-        self.currentTime = 0.0
-        self.duration = 0.0
-        self.videoId = ""
-        self.state = State.Stopped
+    currentTime: float = 0.0
+    duration: float = 0.0
+    videoId: str = ""
+    state: State = State.Stopped
 
 
 class _CallbackListener(EventListener):
@@ -74,23 +75,61 @@ class YtLoungeApi(pyytlounge.YtLoungeApi):
             self.skip_ads = config.skip_ads
             self.auto_play = config.auto_play
         self._command_mutex = asyncio.Lock()
+        self._ad_mute_requested = None
+        self._ad_mute_applied = None
+        self._ad_mute_task = None
 
     async def _handle_playback_state_event(self, event: PlaybackStateEvent) -> None:
-        self._playback_state.currentTime = event.current_time
-        self._playback_state.duration = event.duration
-        self._playback_state.state = event.state
+        self._playback_state = replace(
+            self._playback_state,
+            currentTime=event.current_time,
+            duration=event.duration,
+            state=event.state,
+        )
         if self._state_callback:
             await self._state_callback(self._playback_state)
 
     async def _handle_now_playing_event(self, event: NowPlayingEvent) -> None:
-        if event.current_time is not None:
-            self._playback_state.currentTime = event.current_time
-        if event.duration is not None:
-            self._playback_state.duration = event.duration
-        self._playback_state.videoId = event.video_id or ""
-        self._playback_state.state = event.state
+        self._playback_state = replace(
+            self._playback_state,
+            currentTime=(
+                event.current_time if event.current_time is not None
+                else self._playback_state.currentTime
+            ),
+            duration=(
+                event.duration if event.duration is not None
+                else self._playback_state.duration
+            ),
+            videoId=event.video_id or "",
+            state=event.state,
+        )
         if self._state_callback:
             await self._state_callback(self._playback_state)
+
+    def _request_ad_mute(self, muted: bool) -> None:
+        """Coalesce ad mute commands: always converge on the newest desired state."""
+        self._ad_mute_requested = muted
+        task = getattr(self, "_ad_mute_task", None)
+        if task is None or task.done():
+            self._ad_mute_task = asyncio.create_task(self._apply_ad_mute())
+
+    async def _apply_ad_mute(self) -> None:
+        try:
+            while getattr(self, "_ad_mute_applied", None) != self._ad_mute_requested:
+                requested = self._ad_mute_requested
+                await self.mute(requested, override=True)
+                self._ad_mute_applied = requested
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            self.logger.exception("Unable to apply ad mute state")
+
+    async def stop_background_actions(self) -> None:
+        task = getattr(self, "_ad_mute_task", None)
+        if task is not None and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        self._ad_mute_task = None
 
     # Ensures that we still are subscribed to the lounge
     async def _watchdog(self):
@@ -166,29 +205,29 @@ class YtLoungeApi(pyytlounge.YtLoungeApi):
             # print(data)
             # Unmute when the video starts playing
             if self.mute_ads and data["state"] == "1":
-                create_task(self.mute(False, override=True))
+                self._request_ad_mute(False)
         elif event_type == "nowPlaying":
             data = args[0]
             # Unmute when the video starts playing
             if self.mute_ads and data.get("state", "0") == "1":
                 self.logger.info("Ad has ended, unmuting")
-                create_task(self.mute(False, override=True))
+                self._request_ad_mute(False)
         elif event_type == "onAdStateChange":
             data = args[0]
             if (data["adState"] in {"0", "1082"}) and data[
                 "currentTime"
             ] != "0":  # Ad is not playing, or has just been skipped (1082)
                 self.logger.info("Ad has ended, unmuting")
-                create_task(self.mute(False, override=True))
+                self._request_ad_mute(False)
             elif (
                 self.skip_ads and data["isSkipEnabled"] == "true"
             ):  # YouTube uses strings for booleans
                 self.logger.info("Ad can be skipped, skipping")
                 create_task(self.skip_ad())
-                create_task(self.mute(False, override=True))
+                self._request_ad_mute(False)
             elif self.mute_ads:  # Seen multiple other adStates, assuming they are all ads
                 self.logger.info("Ad has started, muting")
-                create_task(self.mute(True, override=True))
+                self._request_ad_mute(True)
         # Manages volume, useful since YouTube wants to know the volume
         # when unmuting (even if they already have it)
         elif event_type == "onVolumeChanged":
@@ -212,10 +251,10 @@ class YtLoungeApi(pyytlounge.YtLoungeApi):
             ):  # YouTube uses strings for booleans
                 self.logger.info("Ad can be skipped, skipping")
                 create_task(self.skip_ad())
-                create_task(self.mute(False, override=True))
+                self._request_ad_mute(False)
             elif self.mute_ads:  # Seen multiple other adStates, assuming they are all ads
                 self.logger.info("Ad has started, muting")
-                create_task(self.mute(True, override=True))
+                self._request_ad_mute(True)
 
         elif event_type == "loungeStatus":
             data = args[0]
