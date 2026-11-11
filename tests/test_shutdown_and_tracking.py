@@ -112,7 +112,15 @@ class SkipReportingTests(unittest.IsolatedAsyncioTestCase):
             await self.listener.skip(0, 10.0, ["segment-1"])
         self.report.assert_not_awaited()
 
+    async def test_rejected_seek_does_not_report_view(self):
+        # pyytlounge.seek_to() returns False when the command is not accepted.
+        self.seek.return_value = False
+        await self.listener.skip(0, 10.0, ["segment-1"])
+        self.seek.assert_awaited_once_with(10.0)
+        self.report.assert_not_awaited()
+
     async def test_successful_seek_reports_once(self):
+        self.seek.return_value = True
         await self.listener.skip(0, 10.0, ["segment-1"])
         self.seek.assert_awaited_once_with(10.0)
         self.report.assert_awaited_once_with(["segment-1"])
