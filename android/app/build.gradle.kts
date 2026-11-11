@@ -14,15 +14,15 @@ android {
         applicationId = "com.moyou.isponsorblocktv"
         minSdk = 26
         targetSdk = 35
-        versionCode = 2
-        versionName = "0.2.0-beta.1"
+        versionCode = 3
+        versionName = "0.3.0-mobile-beta.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     buildTypes {
         debug {
             // Different debug signing keys are used by CI. Install safely beside
             // the existing v0.1 app rather than requiring data deletion.
-            applicationIdSuffix = ".beta"
+            applicationIdSuffix = ".mobilebeta"
         }
         release {
             isMinifyEnabled = false

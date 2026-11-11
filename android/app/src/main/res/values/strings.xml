@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">iSponsorBlockTV Beta</string>
+    <string name="app_name">iSponsorBlockTV Mobile Beta</string>
     <string name="notification_channel">مراقبة YouTube TV</string>
     <string name="notification_description">اتصال فعّال بتلفاز YouTube وتخطي المقاطع</string>
 </resources>

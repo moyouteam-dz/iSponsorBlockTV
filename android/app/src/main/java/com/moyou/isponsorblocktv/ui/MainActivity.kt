@@ -66,6 +66,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.moyou.isponsorblocktv.data.SponsorBlockRepository
+import com.moyou.isponsorblocktv.mobile.MobileYouTubeScreen
+import javax.inject.Inject
 import com.moyou.isponsorblocktv.domain.LinkStatus
 import com.moyou.isponsorblocktv.service.MonitorService
 import dagger.hilt.android.AndroidEntryPoint
@@ -74,11 +77,13 @@ import kotlin.math.roundToInt
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
     private val vm: MainViewModel by viewModels()
+    @Inject lateinit var sponsorBlock: SponsorBlockRepository
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
             val state by vm.uiState.collectAsStateWithLifecycle()
+            var mobileMode by rememberSaveable { mutableStateOf(false) }
             val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
                 // Permission may be denied: foreground service still displays its task notification.
                 startMonitor()
@@ -91,7 +96,22 @@ class MainActivity : ComponentActivity() {
             }
             CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
                 MaterialTheme(colorScheme = appColors) {
-                    SponsorScreen(
+                    if (mobileMode) {
+                        MobileYouTubeScreen(
+                            config = state.config,
+                            sponsorBlock = sponsorBlock,
+                            onClose = { mobileMode = false },
+                        )
+                    } else {
+                        Column(Modifier.fillMaxSize().safeDrawingPadding()) {
+                            Button(
+                                onClick = { mobileMode = true },
+                                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
+                            ) {
+                                Text("مشاهدة YouTube على هذا الهاتف • بدون تلفاز")
+                            }
+                            Box(Modifier.weight(1f)) {
+                                SponsorScreen(
                         state = state,
                         pair = vm::pair,
                         start = onStart,
@@ -105,7 +125,10 @@ class MainActivity : ComponentActivity() {
                         setMinimum = vm::setMinimum,
                         setOffset = vm::setOffset,
                         openSource = { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/dmunozv04/iSponsorBlockTV"))) },
-                    )
+                                )
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -166,7 +189,7 @@ private fun SponsorScreen(
     val active = state.monitor.status != LinkStatus.STOPPED && state.monitor.status != LinkStatus.ERROR
     var code by rememberSaveable { mutableStateOf("") }
 
-    Surface(Modifier.fillMaxSize().safeDrawingPadding(), color = MaterialTheme.colorScheme.background) {
+    Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
             horizontalAlignment = Alignment.CenterHorizontally,
