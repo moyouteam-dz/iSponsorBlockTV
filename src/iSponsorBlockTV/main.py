@@ -144,10 +144,9 @@ class DeviceListener:
         ):
             return
         self.logger.info("Skipping segment: seeking to %s", position)
-        await asyncio.gather(
-            asyncio.create_task(self.lounge_controller.seek_to(position)),
-            asyncio.create_task(self.api_helper.mark_viewed_segments(uuids)),
-        )
+        # Only report a segment after the device has accepted the seek.
+        await self.lounge_controller.seek_to(position)
+        await self.api_helper.mark_viewed_segments(uuids)
 
     async def cancel(self):
         self.cancelled = True
@@ -210,27 +209,36 @@ async def main_async(config, debug, http_tracing):
     else:
         web_session = aiohttp.ClientSession(trust_env=config.use_proxy, connector=tcp_connector)
 
-    api_helper = api_helpers.ApiHelper(config, web_session)
-    for i in config.devices:
-        device = DeviceListener(api_helper, config, i, debug, web_session)
-        devices.append(device)
-        await device.initialize_web_session()
-        tasks.append(loop.create_task(device.loop()))
-        tasks.append(loop.create_task(device.refresh_auth_loop()))
-    signal(SIGTERM, handle_signal)
-    signal(SIGINT, handle_signal)
     try:
+        api_helper = api_helpers.ApiHelper(config, web_session)
+        for i in config.devices:
+            device = DeviceListener(api_helper, config, i, debug, web_session)
+            devices.append(device)
+            await device.initialize_web_session()
+            tasks.append(loop.create_task(device.loop()))
+            tasks.append(loop.create_task(device.refresh_auth_loop()))
+        signal(SIGTERM, handle_signal)
+        signal(SIGINT, handle_signal)
         await asyncio.gather(*tasks)
     except KeyboardInterrupt:
         print("Cancelling tasks and exiting...")
-        await finish(devices, web_session, tcp_connector)
+    finally:
+        # Every exit path (including failed startup or task cancellation) must
+        # close device subscriptions and owned network resources.
         for task in tasks:
             task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
-    finally:
-        await web_session.close()
-        await tcp_connector.close()
-        print("Exited")
+        try:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        finally:
+            try:
+                await asyncio.gather(
+                    *(device.cancel() for device in devices),
+                    return_exceptions=True,
+                )
+            finally:
+                await web_session.close()
+                await tcp_connector.close()
+                print("Exited")
 
 
 def main(config, debug, http_tracing):
