@@ -19,6 +19,11 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     buildTypes {
+        debug {
+            // Different debug signing keys are used by CI. Install safely beside
+            // the existing v0.1 app rather than requiring data deletion.
+            applicationIdSuffix = ".beta"
+        }
         release {
             isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"))

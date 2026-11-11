@@ -14,7 +14,7 @@
         android:allowBackup="false"
         android:icon="@drawable/ic_launcher"
         android:banner="@drawable/tv_banner"
-        android:label="iSponsorBlockTV Android"
+        android:label="@string/app_name"
         android:supportsRtl="true"
         android:theme="@android:style/Theme.Material.NoActionBar"
         android:usesCleartextTraffic="false">
