@@ -217,6 +217,9 @@ class ApiHelper:
         ignore_ttl = True
         try:
             response_segments = response["segments"]
+            # An empty valid response is provisional: segments can be submitted later.
+            if not response_segments:
+                return [], False
             # sort by end
             response_segments.sort(key=lambda x: x["segment"][1])
             # extend ends of overlapping segments to make one big segment
