@@ -88,6 +88,43 @@ class DeviceLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 await self.listener.loop()
 
 
+class PlaybackTransitionTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        device = SimpleNamespace(offset=0.0, screen_id="tv", name="TV")
+        self.controller = SimpleNamespace(
+            playback_speed=1.0,
+            subscribe_task=None,
+            subscribe_task_watchdog=None,
+            disconnect=AsyncMock(),
+        )
+        with patch.object(main.ytlounge, "YtLoungeApi", return_value=self.controller):
+            self.listener = main.DeviceListener(
+                api_helper=None, config=SimpleNamespace(), device=device,
+                debug=False, web_session=None,
+            )
+
+    async def test_segment_beginning_at_zero_can_be_skipped(self):
+        self.listener.skip = AsyncMock()
+        await self.listener.time_to_segment(
+            [{"start": 0.0, "end": 5.0, "UUID": ["one"]}],
+            position=0.0,
+            time_start=main.time.monotonic(),
+        )
+        self.listener.skip.assert_awaited_once()
+        args = self.listener.skip.await_args.args
+        self.assertEqual(args[1:], (5.0, ["one"]))
+
+    async def test_zero_playback_speed_never_divides_or_seeks(self):
+        self.controller.playback_speed = 0.0
+        self.listener.skip = AsyncMock()
+        await self.listener.time_to_segment(
+            [{"start": 2.0, "end": 5.0, "UUID": ["one"]}],
+            position=0.0,
+            time_start=main.time.monotonic(),
+        )
+        self.listener.skip.assert_not_awaited()
+
+
 class _NetworkResponse:
     def __init__(self, status, payload=None, text=""):
         self.status = status
@@ -182,6 +219,20 @@ class ConfigSaveTests(unittest.TestCase):
             self.assertEqual(config.data_dir, directory)
             self.assertEqual(config.devices[0]["screen_id"], "screen-1")
 
+    def test_replace_failure_preserves_existing_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = helpers.Config(directory)
+            config.devices = [{"screen_id": "screen-1", "name": "Living room"}]
+            config.save()
+            original = Path(config.config_file).read_bytes()
+            config.join_name = "Changed but not committed"
+            with patch.object(helpers.os, "replace", side_effect=OSError("rename failed")):
+                with self.assertRaises(OSError):
+                    config.save()
+            self.assertEqual(Path(config.config_file).read_bytes(), original)
+            self.assertEqual(config.join_name, "Changed but not committed")
+            self.assertEqual(list(Path(directory).glob(".config-*.tmp")), [])
+
     def test_save_keeps_original_config_schema(self):
         with tempfile.TemporaryDirectory() as directory:
             config = helpers.Config(directory)
@@ -207,6 +258,18 @@ class SetupStateTests(unittest.IsolatedAsyncioTestCase):
         screen.changed_pairing_code(event)
         self.assertEqual(screen.pairing_validation_generation, 5)
         self.assertFalse(screen.pairing_can_add)
+
+    async def test_late_pairing_result_is_ignored_after_input_changes(self):
+        response = SimpleNamespace(screen_id="screen-1", name="TV")
+        api = SimpleNamespace(pair_with_code=AsyncMock(return_value=response))
+        screen = setup_wizard.AddDevice(
+            config=SimpleNamespace(), web_session=None, api_helper=api
+        )
+        screen.pairing_validation_generation = 8
+        # A response from generation 7 must not update the current form.
+        await screen.task_validate_pairing_code("123456789012", 7)
+        self.assertFalse(screen.pairing_can_add)
+        self.assertIsNone(screen.validated_paired_device)
 
     async def test_empty_channel_search_reenables_button(self):
         api = SimpleNamespace(search_channels=AsyncMock(return_value=[]))
